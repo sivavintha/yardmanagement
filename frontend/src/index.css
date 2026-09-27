@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@media print {
+  .no-print { display: none !important; }
+
+  /* If a printable table (e.g. Gate Pass container list) is long enough to
+     spill onto a second sheet, repeat its header row on each page instead
+     of only showing column headers on page 1. */
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; }
+}
+
+@page {
+  size: A4;
+  margin: 14mm;
+}

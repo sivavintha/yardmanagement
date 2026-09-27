@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yard
+      POSTGRES_PASSWORD: yard_password
+      POSTGRES_DB: yard_management
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Not published publicly — only reachable on the internal docker network,
+    # per LLD section 9 (restrict database port 5432).
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yard -d yard_management"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: "postgresql://yard:yard_password@postgres:5432/yard_management?schema=public"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "4000"
+    volumes:
+      - api_uploads:/app/uploads
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+      # Uncomment once you have a client-provided SSL certificate mounted in,
+      # or front this with a TLS-terminating reverse proxy / certbot sidecar.
+      # - "443:443"
+
+volumes:
+  pgdata:
+  api_uploads:

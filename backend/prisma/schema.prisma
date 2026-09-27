@@ -1,0 +1,329 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TxnStatus {
+  ACTIVE
+  VOID
+}
+
+enum ReportType {
+  STOCK_SUMMARY
+  OUTBOUND_DETAIL
+  CONSOLIDATED
+  BOTH
+}
+
+enum AttachmentType {
+  EXCEL
+  PDF
+  BOTH
+}
+
+enum DeliveryStatus {
+  SENT
+  FAILED
+}
+
+// Named counters backing every auto-generated number in the app (Inbound
+// booking no, Outbound/Exbond no, Gate Pass no, and the auto-coded masters).
+// Incremented inside the same DB transaction as the record it numbers, with
+// a row lock, so concurrent submissions can never collide on a number.
+model Sequence {
+  key          String @id // e.g. "inbound", "outbound", "gatepass", "importer", "cha", "bay", "crane"
+  currentValue Int    @default(0)
+}
+
+model User {
+  id            String     @id @default(cuid())
+  name          String
+  email         String     @unique
+  passwordHash  String
+  active        Boolean    @default(true)
+  roleId        String
+  role          Role       @relation(fields: [roleId], references: [id])
+  createdInbounds  Inbound[]
+  createdOutbounds Outbound[]
+  createdGatePasses GatePass[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+}
+
+model Role {
+  id          String @id @default(cuid())
+  name        String @unique
+  // JSON permissions: { [menuKey]: { view, create, edit, void, print, export } }
+  permissions Json
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Importer {
+  id            String    @id @default(cuid())
+  code          String    @unique // auto-generated, e.g. IMP0001 — never editable once created
+  name          String
+  address1      String?
+  address2      String?
+  address3      String?
+  address4      String?
+  city          String?
+  pincode       String?
+  phone         String?
+  email         String?
+  contactPerson String?
+  active        Boolean   @default(true)
+  inbounds      Inbound[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Cha {
+  id            String    @id @default(cuid())
+  code          String    @unique // auto-generated, e.g. CHA0001 — never editable once created
+  name          String
+  address1      String?
+  address2      String?
+  address3      String?
+  address4      String?
+  city          String?
+  pincode       String?
+  phone         String?
+  email         String?
+  contactPerson String?
+  active        Boolean   @default(true)
+  inbounds      Inbound[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Bay {
+  id          String              @id @default(cuid())
+  code        String              @unique // auto-generated, e.g. BAY0001 — never editable once created
+  description String?
+  active      Boolean             @default(true)
+  containers  InboundContainer[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+}
+
+model Crane {
+  id         String              @id @default(cuid())
+  code       String              @unique // auto-generated
+  name       String
+  active     Boolean             @default(true)
+  containers InboundContainer[]
+  lines      OutboundLine[]
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+}
+
+model StockCategory {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  inbounds  Inbound[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model ContainerSize {
+  id         String              @id @default(cuid())
+  name       String              @unique // "20 ft", "40 ft"
+  active     Boolean             @default(true)
+  containers InboundContainer[]
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+}
+
+model CompanySetting {
+  id          String  @id @default(cuid())
+  name        String
+  address     String?
+  contacts    String?
+  logoUrl     String?
+  theme       Json?
+  printFooter String?
+  updatedAt   DateTime @updatedAt
+}
+
+// UI label: "Arrival Date" (inboundDate), "Cargo" (goodsDescription),
+// "In BE No/Date" (beNumber/beDate). Kept as the original field names in the
+// schema/API to avoid an unnecessary churn migration — only the labels
+// shown to the user changed. No truck number here anymore (truck only
+// exists at the Outbound line level); no header-level bay (bay is now
+// per-container only).
+model Inbound {
+  id               String    @id @default(cuid())
+  inboundNumber    String    @unique // auto-generated booking no., e.g. TY000011
+  inboundDate      DateTime
+  referenceNumber  String?
+  importerId       String
+  importer         Importer  @relation(fields: [importerId], references: [id])
+  chaId            String?
+  cha              Cha?      @relation(fields: [chaId], references: [id])
+  beNumber         String?
+  beDate           DateTime?
+  goodsDescription String?
+  categoryId       String
+  category         StockCategory @relation(fields: [categoryId], references: [id])
+  status           TxnStatus @default(ACTIVE)
+  totalPackages    Int       @default(0) // derived from containers, kept denormalized for reporting speed
+  containers       InboundContainer[]
+  outbounds        Outbound[]
+  createdById      String
+  createdBy        User      @relation(fields: [createdById], references: [id])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([importerId])
+  @@index([categoryId])
+  @@index([status])
+}
+
+model InboundContainer {
+  id                String   @id @default(cuid())
+  inboundId         String
+  inbound           Inbound  @relation(fields: [inboundId], references: [id])
+  containerNumber   String
+  containerSizeId   String
+  containerSize     ContainerSize @relation(fields: [containerSizeId], references: [id])
+  bayId             String?
+  bay               Bay?     @relation(fields: [bayId], references: [id])
+  craneId           String?
+  crane             Crane?   @relation(fields: [craneId], references: [id])
+  weight            Float?
+  dutyPaid          Boolean  @default(false)
+  receivedPackages  Int
+  remainingPackages Int
+  remarks           String?
+  outboundLines     OutboundLine[]
+  outbounds         Outbound[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Container number is unique only while it has active stock (remainingPackages > 0
+  // AND inbound is ACTIVE). Enforced in application logic, not a DB constraint,
+  // because a container number can be reused once stock is exhausted/voided.
+  @@index([inboundId])
+  @@index([containerNumber])
+}
+
+// Outbound (Exbond) = ONE container from ONE inbound, plus any number of
+// truck-lines splitting that single container's logs across multiple
+// trucks. Editable until any of its lines has been pulled into a gate pass
+// (OutboundLine.gatePassId set) — see the lock check in outbound.ts.
+model Outbound {
+  id                 String         @id @default(cuid())
+  outboundNumber     String         @unique // auto-generated Exbond no.
+  outboundDate       DateTime
+  referenceNumber    String?
+  inboundId          String
+  inbound            Inbound        @relation(fields: [inboundId], references: [id])
+  inboundContainerId String
+  inboundContainer   InboundContainer @relation(fields: [inboundContainerId], references: [id])
+  remarks            String?
+  status             TxnStatus      @default(ACTIVE)
+  lines              OutboundLine[]
+  createdById        String
+  createdBy          User           @relation(fields: [createdById], references: [id])
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([inboundId])
+  @@index([inboundContainerId])
+  @@index([status])
+}
+
+model OutboundLine {
+  id                 String           @id @default(cuid())
+  outboundId         String
+  outbound           Outbound         @relation(fields: [outboundId], references: [id])
+  inboundContainerId String
+  inboundContainer   InboundContainer @relation(fields: [inboundContainerId], references: [id])
+  truckNumber        String
+  issuedPackages     Int
+  exBeNumber         String?
+  exBeDate           DateTime?
+  craneId            String?
+  crane              Crane?           @relation(fields: [craneId], references: [id])
+  weight             Float?
+  status             TxnStatus        @default(ACTIVE)
+  // Set once this line has been pulled into a printed gate pass. A gate
+  // pass can gather lines from several different Outbound entries as long
+  // as they share the same truckNumber — see gatepass.ts.
+  gatePassId         String?
+  gatePass           GatePass?        @relation(fields: [gatePassId], references: [id])
+  createdAt          DateTime         @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  @@index([outboundId])
+  @@index([inboundContainerId])
+  @@index([truckNumber])
+  @@index([gatePassId])
+}
+
+// Gate Pass is truck-centric: created by picking a truck number, then
+// pulling in every ACTIVE OutboundLine (across any Outbound/Exbond entries)
+// that shares that truck number and isn't already on another gate pass.
+model GatePass {
+  id              String         @id @default(cuid())
+  gatePassNumber  String         @unique // system-generated
+  issuedAt        DateTime       @default(now())
+  truckNumber     String
+  placeFrom       String
+  placeTo         String
+  referenceNumber String?
+  deliveryDate    DateTime
+  lines           OutboundLine[]
+  printCount      Int            @default(0)
+  status          TxnStatus      @default(ACTIVE)
+  createdById     String
+  createdBy       User           @relation(fields: [createdById], references: [id])
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([truckNumber])
+}
+
+// A named, independently pausable template — one client/party can now have
+// its own schedule with its own filters, instead of a single shared config.
+model ReportSchedule {
+  id              String         @id @default(cuid())
+  name            String         // e.g. "Daily stock — Kaveri Timbers"
+  enabled         Boolean        @default(false)
+  recipients      String[]       // to
+  ccRecipients    String[]       @default([])
+  subjectTemplate String
+  bodyTemplate    String
+  attachmentType  AttachmentType @default(EXCEL)
+  reportType      ReportType     @default(STOCK_SUMMARY)
+  weekdays        Int[]          // 0=Sunday..6=Saturday
+  sendTime        String         // "HH:mm" in Asia/Kolkata
+  categoryFilter  String?        // optional StockCategory id
+  importerFilter  String?        // optional Importer id — scopes the report to one party
+  deliveries      ReportDelivery[]
+  updatedAt       DateTime       @updatedAt
+  createdAt       DateTime       @default(now())
+}
+
+model ReportDelivery {
+  id               String         @id @default(cuid())
+  reportDate       DateTime       @db.Date
+  scheduleId       String
+  schedule         ReportSchedule @relation(fields: [scheduleId], references: [id])
+  recipients       String[]
+  reportType       ReportType
+  attachmentNames  String[]
+  status           DeliveryStatus
+  errorText        String?
+  sentAt           DateTime       @default(now())
+
+  // one send per schedule per calendar date - acts as the "send lock"
+  @@unique([scheduleId, reportDate])
+}
